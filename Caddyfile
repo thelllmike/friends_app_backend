@@ -1,0 +1,52 @@
+{
+	email {$ACME_EMAIL}
+	# Pin the CA so the cert path coturn reads is stable
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
+# API + WebSocket (/ws) + profile photos (/media) with automatic HTTPS/WSS.
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	handle_path /media/* {
+		root * /srv/media
+		header Cache-Control "public, max-age=604800, immutable"
+		header X-Content-Type-Options nosniff
+		file_server
+	}
+
+	handle {
+		# reverse_proxy upgrades WebSockets automatically; long timeouts keep calls' sockets open.
+		reverse_proxy api:8000 {
+			flush_interval -1
+			transport http {
+				read_timeout 0
+				write_timeout 0
+			}
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+	log {
+		output stdout
+		# Web clients pass the JWT as ?token= on /ws (browsers can't set WS headers): keep it out of logs.
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					replace token REDACTED
+				}
+			}
+		}
+	}
+}
+
+# Only here so Caddy obtains/renews a certificate that coturn uses for TURN over TLS (5349).
+{$TURN_DOMAIN} {
+	respond "ok" 200
+}

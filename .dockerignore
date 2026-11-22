@@ -1,0 +1,13 @@
+.venv
+.env
+.env.local
+media
+tests
+scripts
+.pytest_cache
+**/__pycache__
+Friends*.html
+backups
+dashboard/.git
+dashboard/.gitignore
+dashboard/README.md

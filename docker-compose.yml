@@ -1,0 +1,107 @@
+# Friends backend: API + Postgres + Redis + coturn + Caddy on one VPS.
+#   cp .env.example .env   # fill in values
+#   docker compose up -d --build
+#   docker compose exec api python -m app.cli create-admin you@example.com '<strong password>' superadmin
+
+x-api-env: &api-env
+  ENVIRONMENT: production
+  DATABASE_URL: postgresql+asyncpg://friends:${POSTGRES_PASSWORD}@postgres:5432/friends
+  REDIS_URL: redis://redis:6379/0
+  MEDIA_DIR: /data/media
+  MEDIA_BASE_URL: https://${API_DOMAIN}/media
+  PUBLIC_BASE_URL: https://${API_DOMAIN}
+  TURN_HOST: ${TURN_DOMAIN}
+
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment: *api-env
+    volumes:
+      - media:/data/media
+      - ./secrets:/app/secrets:ro   # Google Play service account JSON, App Store .p8 key
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    expose: ["8000"]   # only reachable through Caddy
+    logging: &logging
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: friends
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: friends
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U friends -d friends"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *logging
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      API_DOMAIN: ${API_DOMAIN}
+      TURN_DOMAIN: ${TURN_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - media:/srv/media:ro
+    depends_on: [api]
+    logging: *logging
+
+  coturn:
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    # Host networking: Docker can't efficiently publish the 49152-65535 relay range.
+    network_mode: host
+    # Runs as root only to read Caddy's TLS certs, then drops to nobody (see proc-user in turnserver.conf).
+    user: "0:0"
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - caddy_data:/caddy:ro
+    command:
+      - -c
+      - /etc/coturn/turnserver.conf
+      - --static-auth-secret=${TURN_SECRET}
+      - --realm=${TURN_REALM:-friends}
+      - --server-name=${TURN_DOMAIN}
+      - --external-ip=${PUBLIC_IP}
+      - --cert=/caddy/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${TURN_DOMAIN}/${TURN_DOMAIN}.crt
+      - --pkey=/caddy/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${TURN_DOMAIN}/${TURN_DOMAIN}.key
+    depends_on: [caddy]
+    logging: *logging
+
+volumes:
+  pgdata:
+  redisdata:
+  media:
+  caddy_data:
+  caddy_config:
