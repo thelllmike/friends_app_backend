@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field
 
 FEATURES = [
     {"id": "gender_filter", "title": "Gender filter", "description": "Choose who you meet"},
-    {"id": "country_filter", "title": "Country filter", "description": "Meet people from a specific country"},
     {"id": "priority_matching", "title": "Priority matching", "description": "Skip the line and match faster"},
 ]
 

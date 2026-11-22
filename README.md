@@ -265,7 +265,7 @@ Send `{"type":"ping"}` every `heartbeat_seconds`. The server closes idle sockets
 
 | Client → server | Payload |
 |---|---|
-| `join_queue` | `{"filters": {"country": "US"\|"Anywhere", "gender": "female"\|"Anywhere"}}`. Filters only apply to premium users |
+| `join_queue` | `{"filters": {"country": "US"\|"Anywhere", "gender": "female"\|"Anywhere"}}`. Country filter is free for everyone; the gender filter only applies to premium users |
 | `leave_queue` | — |
 | `offer` / `answer` | `{"sdp": {...RTCSessionDescription}}` |
 | `ice_candidate` | `{"candidate": {...RTCIceCandidate}}` |

@@ -130,7 +130,7 @@ class Session:
 
     @staticmethod
     def _resolve_filters(f: dict[str, Any] | None, premium: bool, flags: dict) -> tuple[str | None, str | None, bool]:
-        """Returns (country, gender, filters_ignored). Free users always match 'Anywhere'."""
+        """Returns (country, gender, filters_ignored). Country is free for everyone; gender is premium-only."""
         f = f or {}
         country = f.get("country")
         gender = f.get("gender")
@@ -140,10 +140,9 @@ class Session:
             raise WSError("invalid_filter", "Unknown country code")
         if gender and gender not in GENDERS:
             raise WSError("invalid_filter", "Gender must be male, female, other or Anywhere")
-        requested = bool(country or gender)
-        if not premium:
-            return None, None, requested
         ignored = False
+        if gender and not premium:
+            gender, ignored = None, True
         if country and not flags["country_filter_enabled"]:
             country, ignored = None, True
         if gender and not flags["gender_filter_enabled"]:

@@ -24,7 +24,7 @@ def test_plans_from_db():
     with client() as c:
         body = c.get("/premium/plans").json()
     assert [p["code"] for p in body["plans"]] == ["week", "month", "year"]
-    assert {f["id"] for f in body["features"]} == {"gender_filter", "country_filter", "priority_matching"}
+    assert {f["id"] for f in body["features"]} == {"gender_filter", "priority_matching"}
 
 
 def test_verify_restore_and_conflicts():
@@ -144,3 +144,28 @@ async def test_background_expiry():
     await eng.dispose()
     with client() as c:
         assert c.get("/premium/status", headers=u["headers"]).json()["is_premium"] is False
+
+
+async def test_free_user_country_filter_is_honoured():
+    """Country filter is free: a non-premium user asking for BR skips a waiting JP user and matches the BR one."""
+    with client() as c:
+        jp = signup(c, profile={"country": "JP"})
+        br = signup(c, profile={"country": "BR"})
+        free = signup(c, profile={"country": "LK"})
+    w_jp, w_br, w_free = (await connect(jp["access_token"]), await connect(br["access_token"]),
+                          await connect(free["access_token"]))
+    for w in (w_jp, w_br, w_free):
+        await expect(w, "connected")
+    # JP (free) only wants JP, so JP and BR stay unmatched in the queue
+    await send(w_jp, type="join_queue", filters={"country": "JP"}); await expect(w_jp, "searching")
+    await asyncio.sleep(0.05)
+    await send(w_br, type="join_queue"); await expect(w_br, "searching")
+    await expect_none(w_br, "matched", timeout=0.5)
+    await send(w_free, type="join_queue", filters={"country": "br"})
+    s = await expect(w_free, "searching")
+    assert s["filters"]["country"] == "BR" and not s["premium"] and not s["filters_ignored"]
+    m = await expect(w_free, "matched")
+    assert m["partner"]["id"] == br["user"]["id"]
+    await expect_none(w_jp, "matched", timeout=0.5)
+    for w in (w_jp, w_br, w_free):
+        await w.close()
