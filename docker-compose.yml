@@ -73,6 +73,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
       - media:/srv/media:ro
+      - ./webapp:/srv/webapp:ro   # web app build (see README: Web app)
     depends_on: [api]
     logging: *logging
 

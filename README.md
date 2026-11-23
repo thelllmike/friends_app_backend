@@ -182,6 +182,19 @@ take Redis leader locks, so each job runs once per interval no matter how many w
 3. Or from any machine with coturn tools installed:
    `turnutils_uclient -u '<username>' -w '<credential>' -y turn.example.com`
 
+### Web app
+
+Caddy serves the web version of the mobile app at `https://<API_DOMAIN>/app/` from `./webapp`.
+It's same-origin with the API, so it needs no CORS entry. Build it on your computer and upload it:
+
+```bash
+cd mobile                                   # mobile/.env: EXPO_PUBLIC_API_URL=https://<API_DOMAIN>
+npx expo export --platform web              # app.json has experiments.baseUrl = "/app"
+rsync -a --delete dist/ root@<VPS_IP>:/opt/friends/webapp/
+```
+
+No restart is needed; Caddy serves the new files immediately.
+
 ### 2.5 Backups
 
 `scripts/backup.sh` dumps the database and the photo folder into `backups/` and keeps 7 days
