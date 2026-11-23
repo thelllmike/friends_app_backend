@@ -28,6 +28,7 @@ log = logging.getLogger("friends.mm")
 PREMIUM_BONUS = 1_000_000_000  # seconds; premium tickets always sort before free ones
 ROOM_TTL = 12 * 3600
 LOCK = "mm:lock"
+SCAN_BATCH = 20
 # Delete KEYS[1] only if it still equals ARGV[1] (don't clobber a newer room pointer).
 _DEL_IF_EQ = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
 
@@ -106,17 +107,23 @@ async def join_and_match(t: Ticket, priority: bool) -> Match | None:
 async def _join_locked(t: Ticket, priority: bool) -> Match | None:
     async with _lock():
         score = time.time() - (PREMIUM_BONUS if (t.premium and priority) else 0)
-        candidates = [c for c in await redis.zrange("mm:queue", 0, settings.queue_scan_limit - 1) if c != t.uid]
-        if candidates:
+        # Scan the queue in small batches and stop at the first compatible partner: usually the first
+        # batch has one, so a search reads ~20 tickets instead of the whole scan window.
+        start = 0
+        while start < settings.queue_scan_limit:
+            batch = [c for c in await redis.zrange("mm:queue", start, start + SCAN_BATCH - 1) if c != t.uid]
+            if not batch:
+                break
             async with redis.pipeline(transaction=False) as p:
-                for c in candidates:
+                for c in batch:
                     p.hgetall(f"mm:ticket:{c}")
                     p.exists(_pair_key(t.uid, c))
                 res = await p.execute()
-            for i, c in enumerate(candidates):
+            for i, c in enumerate(batch):
                 h, recent = res[2 * i], res[2 * i + 1]
                 if not h:
                     await redis.zrem("mm:queue", c)  # orphan entry
+                    start -= 1  # the queue shifted left by one
                     continue
                 other = Ticket.from_redis(h)
                 if recent or not compatible(t, other):
@@ -127,6 +134,7 @@ async def _join_locked(t: Ticket, priority: bool) -> Match | None:
                     p.delete(f"mm:ticket:{c}", f"mm:ticket:{t.uid}")
                     await p.execute()
                 return await _create_room(caller=t, callee=other)
+            start += SCAN_BATCH
         # No partner yet: wait in the queue.
         async with redis.pipeline(transaction=True) as p:
             p.delete(f"mm:ticket:{t.uid}")
