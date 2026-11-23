@@ -7,7 +7,9 @@ user_room:{uid}       STRING room_id
 recent:{a}:{b}        STRING (TTL) pair matched recently -> don't rematch
 
 Every queue mutation (join / match / leave) runs under the `mm:lock` Redis lock so concurrent workers
-can never hand the same user to two rooms.
+can never hand the same user to two rooms. The critical section is Redis-only and short: the call's
+database record is written after the lock is released (load test: the DB write inside the lock capped
+matching at ~47/s and stalled new users behind it).
 """
 import json
 import logging
@@ -60,7 +62,8 @@ class Ticket:
 
 
 def _lock():
-    return redis.lock(LOCK, timeout=5, blocking_timeout=5)
+    # Poll every 5 ms (redis-py's default is 100 ms, which alone limits throughput under contention).
+    return redis.lock(LOCK, timeout=5, blocking_timeout=5, sleep=0.005)
 
 
 def _pair_key(a: str, b: str) -> str:
@@ -89,10 +92,18 @@ class Match:
     caller: Ticket
     callee: Ticket
     shared: list[str]
+    matched_at: datetime | None = None
 
 
 async def join_and_match(t: Ticket, priority: bool) -> Match | None:
     """Enqueue `t` and try to pair it immediately with the best waiting candidate."""
+    match = await _join_locked(t, priority)
+    if match:
+        await _record_room(match)
+    return match
+
+
+async def _join_locked(t: Ticket, priority: bool) -> Match | None:
     async with _lock():
         score = time.time() - (PREMIUM_BONUS if (t.premium and priority) else 0)
         candidates = [c for c in await redis.zrange("mm:queue", 0, settings.queue_scan_limit - 1) if c != t.uid]
@@ -111,9 +122,10 @@ async def join_and_match(t: Ticket, priority: bool) -> Match | None:
                 if recent or not compatible(t, other):
                     continue
                 # Pair found: remove the waiting user, never enqueue the joiner.
-                await redis.zrem("mm:queue", c)
-                await redis.delete(f"mm:ticket:{c}", f"mm:ticket:{t.uid}")
-                await redis.zrem("mm:queue", t.uid)
+                async with redis.pipeline(transaction=True) as p:
+                    p.zrem("mm:queue", c, t.uid)
+                    p.delete(f"mm:ticket:{c}", f"mm:ticket:{t.uid}")
+                    await p.execute()
                 return await _create_room(caller=t, callee=other)
         # No partner yet: wait in the queue.
         async with redis.pipeline(transaction=True) as p:
@@ -127,6 +139,10 @@ async def join_and_match(t: Ticket, priority: bool) -> Match | None:
 
 async def leave_queue(uid: str, sid: str | None = None) -> bool:
     """Remove a waiting user (only if the ticket belongs to `sid`, when given). True if removed."""
+    # Fast path without the lock: most calls (every new search starts with one) find no ticket. A ticket
+    # can only appear through this user's own join, which the session runs after this returns.
+    if not await redis.exists(f"mm:ticket:{uid}"):
+        return False
     async with _lock():
         h = await redis.hgetall(f"mm:ticket:{uid}")
         if not h:
@@ -156,12 +172,18 @@ async def _create_room(caller: Ticket, callee: Ticket) -> Match:
         p.set(f"user_room:{caller.uid}", room_id, ex=ROOM_TTL)
         p.set(f"user_room:{callee.uid}", room_id, ex=ROOM_TTL)
         await p.execute()
+    m = Match(room_id, caller, callee, shared_interests(caller, callee))
+    m.matched_at = now
+    return m
+
+
+async def _record_room(m: Match) -> None:
+    """Persist the call for history/stats (outside the queue lock)."""
     async with SessionLocal() as db:
-        db.add(CallRoom(id=uuid.UUID(room_id), caller_id=uuid.UUID(caller.uid), callee_id=uuid.UUID(callee.uid),
-                        matched_at=now, caller_platform=caller.platform, callee_platform=callee.platform))
+        db.add(CallRoom(id=uuid.UUID(m.room_id), caller_id=uuid.UUID(m.caller.uid), callee_id=uuid.UUID(m.callee.uid),
+                        matched_at=m.matched_at, caller_platform=m.caller.platform, callee_platform=m.callee.platform))
         await db.commit()
-    log.info("matched room=%s caller=%s callee=%s", room_id, caller.uid, callee.uid)
-    return Match(room_id, caller, callee, shared_interests(caller, callee))
+    log.info("matched room=%s caller=%s callee=%s", m.room_id, m.caller.uid, m.callee.uid)
 
 
 @dataclass
