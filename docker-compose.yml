@@ -67,6 +67,7 @@ services:
       - "443:443/udp"   # HTTP/3
     environment:
       API_DOMAIN: ${API_DOMAIN}
+      EXTRA_DOMAINS: ${EXTRA_DOMAINS:-}
       TURN_DOMAIN: ${TURN_DOMAIN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro

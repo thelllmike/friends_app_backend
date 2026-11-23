@@ -5,8 +5,13 @@
 }
 
 # API + WebSocket (/ws) + profile photos (/media) with automatic HTTPS/WSS.
-{$API_DOMAIN} {
+# EXTRA_DOMAINS (optional, space-separated) also serve everything, e.g. an old hostname that
+# already-installed apps still use.
+{$API_DOMAIN} {$EXTRA_DOMAINS:} {
 	encode zstd gzip
+
+	# The bare domain opens the web app.
+	redir / /app/ 302
 
 	handle_path /media/* {
 		root * /srv/media
@@ -55,6 +60,11 @@
 			}
 		}
 	}
+}
+
+# www → bare domain (only used when DNS has a www record pointing here).
+www.{$API_DOMAIN} {
+	redir https://{$API_DOMAIN}{uri} 308
 }
 
 # Only here so Caddy obtains/renews a certificate that coturn uses for TURN over TLS (5349).
