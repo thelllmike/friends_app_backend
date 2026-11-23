@@ -163,7 +163,7 @@ has a comment in `.env.example`.
 the TURN certificate from Caddy's data volume, but only when it starts. Caddy renews about 30 days
 before expiry, so restart coturn weekly to pick up renewals:
 ```bash
-( crontab -l; echo '0 4 * * 1 cd /root/friends && docker compose restart coturn' ) | crontab -
+( crontab -l; echo '0 4 * * 1 cd /opt/friends && docker compose restart coturn' ) | crontab -
 ```
 
 **TURN over TLS on 443:** Caddy already uses 443 on the main IP. To also offer `turns:` on 443 (useful on
