@@ -6,10 +6,9 @@ room:{room_id}        HASH  caller, callee, sid:{uid}, matched_at, connected_at,
 user_room:{uid}       STRING room_id
 recent:{a}:{b}        STRING (TTL) pair matched recently -> don't rematch
 
-Every queue mutation (join / match / leave) runs under the `mm:lock` Redis lock so concurrent workers
-can never hand the same user to two rooms. The critical section is Redis-only and short: the call's
-database record is written after the lock is released (load test: the DB write inside the lock capped
-matching at ~47/s and stalled new users behind it).
+Matching and leaving are single Lua scripts, so Redis runs each atomically: a waiting user can never be
+handed to two rooms, and there is no global lock to queue behind (load test: a lock held across the scan
+and a DB write stalled matching at ~1.9k users on one CPU). The call's database record is written after.
 """
 import json
 import logging
@@ -27,8 +26,6 @@ from app.schemas.common import INTERESTS
 log = logging.getLogger("friends.mm")
 PREMIUM_BONUS = 1_000_000_000  # seconds; premium tickets always sort before free ones
 ROOM_TTL = 12 * 3600
-LOCK = "mm:lock"
-SCAN_BATCH = 20
 # Delete KEYS[1] only if it still equals ARGV[1] (don't clobber a newer room pointer).
 _DEL_IF_EQ = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
 
@@ -62,11 +59,6 @@ class Ticket:
                 "photo_url": self.photo_url}
 
 
-def _lock():
-    # Poll every 5 ms (redis-py's default is 100 ms, which alone limits throughput under contention).
-    return redis.lock(LOCK, timeout=5, blocking_timeout=5, sleep=0.005)
-
-
 def _pair_key(a: str, b: str) -> str:
     x, y = sorted((a, b))
     return f"recent:{x}:{y}"
@@ -98,68 +90,87 @@ class Match:
 
 async def join_and_match(t: Ticket, priority: bool) -> Match | None:
     """Enqueue `t` and try to pair it immediately with the best waiting candidate."""
-    match = await _join_locked(t, priority)
+    match = await _join_atomic(t, priority)
     if match:
         await _record_room(match)
     return match
 
 
-async def _join_locked(t: Ticket, priority: bool) -> Match | None:
-    async with _lock():
-        score = time.time() - (PREMIUM_BONUS if (t.premium and priority) else 0)
-        # Scan the queue in small batches and stop at the first compatible partner: usually the first
-        # batch has one, so a search reads ~20 tickets instead of the whole scan window.
-        start = 0
-        while start < settings.queue_scan_limit:
-            batch = [c for c in await redis.zrange("mm:queue", start, start + SCAN_BATCH - 1) if c != t.uid]
-            if not batch:
-                break
-            async with redis.pipeline(transaction=False) as p:
-                for c in batch:
-                    p.hgetall(f"mm:ticket:{c}")
-                    p.exists(_pair_key(t.uid, c))
-                res = await p.execute()
-            for i, c in enumerate(batch):
-                h, recent = res[2 * i], res[2 * i + 1]
-                if not h:
-                    await redis.zrem("mm:queue", c)  # orphan entry
-                    start -= 1  # the queue shifted left by one
-                    continue
-                other = Ticket.from_redis(h)
-                if recent or not compatible(t, other):
-                    continue
-                # Pair found: remove the waiting user, never enqueue the joiner.
-                async with redis.pipeline(transaction=True) as p:
-                    p.zrem("mm:queue", c, t.uid)
-                    p.delete(f"mm:ticket:{c}", f"mm:ticket:{t.uid}")
-                    await p.execute()
-                return await _create_room(caller=t, callee=other)
-            start += SCAN_BATCH
-        # No partner yet: wait in the queue.
-        async with redis.pipeline(transaction=True) as p:
-            p.delete(f"mm:ticket:{t.uid}")
-            p.hset(f"mm:ticket:{t.uid}", mapping=t.to_redis())
-            p.expire(f"mm:ticket:{t.uid}", 600)
-            p.zadd("mm:queue", {t.uid: score})
-            await p.execute()
+# KEYS: none (keys are derived; single-node Redis). ARGV: uid, score, scan_limit, country, gender,
+# want_country, want_gender, excluded(json list), then the ticket's hash as field/value pairs.
+# Ticket hash values are JSON-encoded. Returns the claimed partner's ticket (flat field/value list), or
+# false after enqueuing the joiner.
+_JOIN_LUA = """
+local uid, score, limit = ARGV[1], ARGV[2], tonumber(ARGV[3])
+local country, gender, want_country, want_gender = ARGV[4], ARGV[5], ARGV[6], ARGV[7]
+local mine_excl = {}
+for _, x in ipairs(cjson.decode(ARGV[8])) do mine_excl[x] = true end
+local function val(v) if v == nil or v == false then return nil end local d = cjson.decode(v)
+  if d == cjson.null then return nil end return d end
+local candidates = redis.call('ZRANGE', 'mm:queue', 0, limit - 1)
+for _, c in ipairs(candidates) do
+  if c ~= uid and not mine_excl[c] then
+    local tk = 'mm:ticket:' .. c
+    local f = redis.call('HMGET', tk, 'country', 'gender', 'want_country', 'want_gender', 'excluded')
+    if not f[1] then
+      redis.call('ZREM', 'mm:queue', c)  -- orphan entry
+    else
+      local pair = (uid < c) and ('recent:' .. uid .. ':' .. c) or ('recent:' .. c .. ':' .. uid)
+      local c_country, c_gender, c_wc, c_wg = val(f[1]), val(f[2]), val(f[3]), val(f[4])
+      local ok = (want_country == '' or want_country == c_country)
+        and (want_gender == '' or want_gender == c_gender)
+        and (c_wc == nil or c_wc == country) and (c_wg == nil or c_wg == gender)
+        and redis.call('EXISTS', pair) == 0
+      if ok then
+        for _, x in ipairs(cjson.decode(f[5])) do if x == uid then ok = false break end end
+      end
+      if ok then
+        local other = redis.call('HGETALL', tk)
+        redis.call('ZREM', 'mm:queue', c, uid)
+        redis.call('DEL', tk, 'mm:ticket:' .. uid)
+        return other
+      end
+    end
+  end
+end
+local mine = 'mm:ticket:' .. uid
+redis.call('DEL', mine)
+redis.call('HSET', mine, unpack(ARGV, 9))
+redis.call('EXPIRE', mine, 600)
+redis.call('ZADD', 'mm:queue', score, uid)
+return false
+"""
+
+# ARGV: uid, expected sid (JSON-encoded) or '' for any. Returns 1 if the user was removed from the queue.
+_LEAVE_LUA = """
+local tk = 'mm:ticket:' .. ARGV[1]
+local sid = redis.call('HGET', tk, 'sid')
+if not sid then return 0 end
+if ARGV[2] ~= '' and sid ~= ARGV[2] then return 0 end
+redis.call('ZREM', 'mm:queue', ARGV[1])
+redis.call('DEL', tk)
+return 1
+"""
+_join_script = redis.register_script(_JOIN_LUA)
+_leave_script = redis.register_script(_LEAVE_LUA)
+
+
+async def _join_atomic(t: Ticket, priority: bool) -> Match | None:
+    score = time.time() - (PREMIUM_BONUS if (t.premium and priority) else 0)
+    flat: list[str] = []
+    for k, v in t.to_redis().items():
+        flat += [k, v]
+    res = await _join_script(args=[t.uid, score, settings.queue_scan_limit, t.country or "", t.gender or "",
+                                   t.want_country or "", t.want_gender or "", json.dumps(t.excluded), *flat])
+    if not res:
         return None
+    other = Ticket.from_redis(dict(zip(res[::2], res[1::2])))
+    return await _create_room(caller=t, callee=other)
 
 
 async def leave_queue(uid: str, sid: str | None = None) -> bool:
     """Remove a waiting user (only if the ticket belongs to `sid`, when given). True if removed."""
-    # Fast path without the lock: most calls (every new search starts with one) find no ticket. A ticket
-    # can only appear through this user's own join, which the session runs after this returns.
-    if not await redis.exists(f"mm:ticket:{uid}"):
-        return False
-    async with _lock():
-        h = await redis.hgetall(f"mm:ticket:{uid}")
-        if not h:
-            return False
-        if sid is not None and json.loads(h.get("sid", "null")) != sid:
-            return False
-        await redis.zrem("mm:queue", uid)
-        await redis.delete(f"mm:ticket:{uid}")
-        return True
+    return bool(await _leave_script(args=[uid, json.dumps(sid) if sid is not None else ""]))
 
 
 async def is_waiting(uid: str, sid: str) -> bool:

@@ -19,7 +19,6 @@ from fastapi import WebSocket
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.rate_limit import hit
-from redis.exceptions import LockError
 from app.models.user import User
 from app.schemas.common import COUNTRY_CODES
 from app.schemas.user import photo_url
@@ -88,9 +87,6 @@ class Session:
             await handler(self, msg)
         except WSError as e:
             await self.error(e.code, e.message)
-        except LockError:
-            # Matchmaking queue lock timed out under heavy load: tell the client to retry, keep the socket.
-            await self.error("server_busy", "Lots of people right now, trying again…")
 
     # ---- matchmaking ----
     async def join_queue(self, msg: dict[str, Any]) -> None:
