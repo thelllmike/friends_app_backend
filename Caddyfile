@@ -1,5 +1,5 @@
 {
-	email {$ACME_EMAIL}
+	# No contact email needed: Let's Encrypt no longer sends expiry mails and Caddy renews automatically.
 	# Pin the CA so the cert path coturn reads is stable
 	acme_ca https://acme-v02.api.letsencrypt.org/directory
 }

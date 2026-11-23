@@ -141,7 +141,7 @@ git clone <your repo> friends && cd friends
 cp .env.example .env
 ```
 Fill in `.env`:
-- `API_DOMAIN`, `TURN_DOMAIN`, `PUBLIC_IP` (the VPS's public IPv4), `ACME_EMAIL`
+- `API_DOMAIN`, `TURN_DOMAIN`, `PUBLIC_IP` (the VPS's public IPv4)
 - `POSTGRES_PASSWORD`, `JWT_SECRET`, `TURN_SECRET`: generate each with `openssl rand -hex 32`
 - `CORS_ORIGINS`: your web client and admin dashboard origins
 - `GOOGLE_CLIENT_IDS`, `APPLE_AUDIENCES`
