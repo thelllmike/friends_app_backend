@@ -37,7 +37,11 @@ class Settings(BaseSettings):
     apple_audiences: CsvList = Field(default_factory=list)
 
     # OTP
-    otp_provider: str = "console"  # console | <your sms provider>
+    otp_provider: str = "console"  # console | textlk
+    # Text.lk SMS gateway (https://text.lk) — used when OTP_PROVIDER=textlk
+    textlk_api_token: str = ""
+    textlk_sender_id: str = ""  # sender ID approved on your Text.lk account (max 11 chars)
+    textlk_api_base: str = "https://app.text.lk/api/v3"
     otp_ttl_seconds: int = 300
     otp_max_attempts: int = 5
     otp_dev_echo: bool = False  # return the code in the API response (dev only!)
@@ -93,6 +97,8 @@ class Settings(BaseSettings):
             problems.append("JWT_SECRET must be a random string of 32+ chars")
         if len(self.turn_secret) < 24 or "change" in self.turn_secret:
             problems.append("TURN_SECRET must be a random string of 24+ chars")
+        if self.otp_provider == "textlk" and not (self.textlk_api_token and self.textlk_sender_id):
+            problems.append("OTP_PROVIDER=textlk needs TEXTLK_API_TOKEN and TEXTLK_SENDER_ID")
         if "*" in self.cors_origins:
             problems.append("CORS_ORIGINS must list explicit origins in production")
         if problems:
