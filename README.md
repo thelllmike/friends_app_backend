@@ -141,7 +141,7 @@ git clone <your repo> friends && cd friends
 cp .env.example .env
 ```
 Fill in `.env`:
-- `API_DOMAIN`, `TURN_DOMAIN`, `PUBLIC_IP` (the VPS's public IPv4), `ACME_EMAIL`
+- `API_DOMAIN`, `TURN_DOMAIN`, `PUBLIC_IP` (the VPS's public IPv4)
 - `POSTGRES_PASSWORD`, `JWT_SECRET`, `TURN_SECRET`: generate each with `openssl rand -hex 32`
 - `CORS_ORIGINS`: your web client and admin dashboard origins
 - `GOOGLE_CLIENT_IDS`, `APPLE_AUDIENCES`
@@ -163,7 +163,7 @@ has a comment in `.env.example`.
 the TURN certificate from Caddy's data volume, but only when it starts. Caddy renews about 30 days
 before expiry, so restart coturn weekly to pick up renewals:
 ```bash
-( crontab -l; echo '0 4 * * 1 cd /root/friends && docker compose restart coturn' ) | crontab -
+( crontab -l; echo '0 4 * * 1 cd /opt/friends && docker compose restart coturn' ) | crontab -
 ```
 
 **TURN over TLS on 443:** Caddy already uses 443 on the main IP. To also offer `turns:` on 443 (useful on
@@ -181,6 +181,19 @@ take Redis leader locks, so each job runs once per interval no matter how many w
    `turn:turn.example.com:3478` with that username and credential. You should see `relay` candidates.
 3. Or from any machine with coturn tools installed:
    `turnutils_uclient -u '<username>' -w '<credential>' -y turn.example.com`
+
+### Web app
+
+Caddy serves the web version of the mobile app at `https://<API_DOMAIN>/app/` from `./webapp`.
+It's same-origin with the API, so it needs no CORS entry. Build it on your computer and upload it:
+
+```bash
+cd mobile                                   # mobile/.env: EXPO_PUBLIC_API_URL=https://<API_DOMAIN>
+npx expo export --platform web              # app.json has experiments.baseUrl = "/app"
+rsync -a --delete dist/ root@<VPS_IP>:/opt/friends/webapp/
+```
+
+No restart is needed; Caddy serves the new files immediately.
 
 ### 2.5 Backups
 
@@ -265,7 +278,7 @@ Send `{"type":"ping"}` every `heartbeat_seconds`. The server closes idle sockets
 
 | Client → server | Payload |
 |---|---|
-| `join_queue` | `{"filters": {"country": "US"\|"Anywhere", "gender": "female"\|"Anywhere"}}`. Filters only apply to premium users |
+| `join_queue` | `{"filters": {"country": "US"\|"Anywhere", "gender": "female"\|"Anywhere"}}`. Country filter is free for everyone; the gender filter only applies to premium users |
 | `leave_queue` | — |
 | `offer` / `answer` | `{"sdp": {...RTCSessionDescription}}` |
 | `ice_candidate` | `{"candidate": {...RTCIceCandidate}}` |

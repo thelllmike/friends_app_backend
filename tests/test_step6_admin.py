@@ -171,3 +171,10 @@ def test_dashboard_is_served_with_csp():
         assert c.get("/dashboard/js/app.js").status_code == 200
         assert c.get("/dashboard/.git/config").status_code == 404
         assert c.get("/dashboard/js/../.env").status_code == 404
+
+
+def test_health_answers_get_and_head():
+    """The apps' offline check probes /health; HEAD must not be a 405 (that showed 'No connection')."""
+    with client() as c:
+        assert c.get("/health").status_code == 200
+        assert c.head("/health").status_code == 200

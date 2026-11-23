@@ -28,7 +28,7 @@ SAFETY_TIPS = [
 ]
 
 
-@router.get("/health")
+@router.api_route("/health", methods=["GET", "HEAD"])
 async def health() -> dict:
     db_ok = redis_ok = True
     try:

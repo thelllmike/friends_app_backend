@@ -36,13 +36,14 @@ async def test_profile_incomplete_cannot_search():
     await ws.close()
 
 
-async def test_free_user_filters_ignored_and_timeout():
+async def test_free_user_gender_ignored_country_kept_and_timeout():
     (u,) = users(1)
     ws = await connect(u["access_token"])
     await expect(ws, "connected")
     await send(ws, type="join_queue", filters={"country": "FR", "gender": "female"})
     s = await expect(ws, "searching")
-    assert s["filters_ignored"] is True and s["filters"] == {"country": "Anywhere", "gender": "Anywhere"}
+    # country is free, gender is premium-only
+    assert s["filters_ignored"] is True and s["filters"] == {"country": "FR", "gender": "Anywhere"}
     # SEARCH_TIMEOUT_SECONDS=5 in the dev .env
     nf = await expect(ws, "no_users_found", timeout=8)
     assert nf["type"] == "no_users_found"

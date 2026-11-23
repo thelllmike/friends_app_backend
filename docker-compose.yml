@@ -67,13 +67,14 @@ services:
       - "443:443/udp"   # HTTP/3
     environment:
       API_DOMAIN: ${API_DOMAIN}
+      EXTRA_DOMAINS: ${EXTRA_DOMAINS:-}
       TURN_DOMAIN: ${TURN_DOMAIN}
-      ACME_EMAIL: ${ACME_EMAIL}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
       - media:/srv/media:ro
+      - ./webapp:/srv/webapp:ro   # web app build (see README: Web app)
     depends_on: [api]
     logging: *logging
 
